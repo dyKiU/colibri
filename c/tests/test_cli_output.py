@@ -167,8 +167,7 @@ class StopShutdownTest(unittest.TestCase):
              mock.patch("builtins.open", mock.mock_open(read_data="123 /model\n")):
             coli.cmd_stop(args)
 
-        self.assertIn(coli.signal.SIGTERM, signals)
-        self.assertNotIn(coli.signal.SIGKILL, signals)
+        self.assertEqual(signals, [0, coli.signal.SIGTERM, 0])
 
     def test_stop_escalates_when_shutdown_timeout_is_explicit(self):
         coli = self.coli

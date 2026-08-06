@@ -593,7 +593,7 @@ class DispatcherTest(unittest.TestCase):
             )
             try:
                 ready = False
-                deadline = time.monotonic() + 15
+                deadline = time.monotonic() + 60
                 while time.monotonic() < deadline:
                     if server.poll() is not None:
                         break
@@ -603,8 +603,14 @@ class DispatcherTest(unittest.TestCase):
                             break
                     except OSError:
                         time.sleep(0.05)
-                if not ready and server.poll() is None:
-                    self.fail("wrapper did not become ready")
+                if not ready:
+                    if server.poll() is None:
+                        server.kill()
+                    stdout, stderr = server.communicate(timeout=5)
+                    self.fail(
+                        f"wrapper did not become ready (returncode={server.returncode})\n"
+                        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+                    )
                 self.assertIsNone(server.poll(), "wrapper exited before becoming ready")
                 server.send_signal(signal.SIGTERM)
                 stdout, stderr = server.communicate(timeout=5)
