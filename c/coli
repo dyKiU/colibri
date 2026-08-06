@@ -1200,10 +1200,31 @@ def cmd_stop(a):
     for pid,_ in targets:
         try: os.kill(pid, signal.SIGTERM)
         except OSError: pass
-    time.sleep(2.0)
-    for pid,_ in targets:
-        try: os.kill(pid, signal.SIGKILL); print(f"  {pid}: forced (SIGKILL)")
-        except OSError: pass       # gia' morto: bene
+    # #810: the engine's SIGTERM path deliberately finishes the active turn before
+    # saving usage/KV state. A fixed two-second sleep followed by SIGKILL destroyed
+    # that cleanup whenever shutdown landed during prefill. Wait for observed exit
+    # by default; systemd's TimeoutStopSec is the outer bound for services. Operators
+    # invoking this command directly can opt into escalation with
+    # COLI_SHUTDOWN_TIMEOUT=<seconds>.
+    from openai_server import shutdown_timeout
+    timeout=shutdown_timeout()
+    deadline=None if timeout is None else time.monotonic()+timeout
+    pending={pid for pid,_ in targets}
+    while pending:
+        alive=set()
+        for pid in pending:
+            try: os.kill(pid,0); alive.add(pid)
+            except OSError: pass
+        pending=alive
+        if not pending: break
+        if deadline is not None and time.monotonic()>=deadline:
+            for pid in pending:
+                try:
+                    os.kill(pid,signal.SIGKILL)
+                    print(f"  {pid}: forced after {timeout:g}s (SIGKILL)")
+                except OSError: pass
+            break
+        time.sleep(0.1)
     try: os.unlink(pf)
     except OSError: pass
     print(f"  {C.grn}✓ stopped{C.r} — RAM released")

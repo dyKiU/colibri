@@ -380,6 +380,7 @@ These are read by the Python programs (not the `glm` engine), so they don't appe
 | `COLI_MAX_QUEUE` | `8` | Max queued requests. |
 | `COLI_QUEUE_TIMEOUT` | `300` | Seconds a request may wait in the queue. |
 | `COLI_KV_SLOTS` | `1` | Independent KV conversation slots (→ engine `KV_SLOTS`). |
+| `COLI_SHUTDOWN_TIMEOUT` | unset | Optional seconds to wait after SIGTERM before the Python server or `coli stop` escalates to SIGKILL. Unset waits for the engine to finish its active turn and save usage/KV state; systemd's `TimeoutStopSec` remains the outer service deadline. |
 | `COLI_POLICY` | `quality` | Resource policy (shared with the engine): `quality` \| `balanced` \| `experimental-fast`. |
 | `COLI_COLOR` | auto (TTY) | `COLI_COLOR=1` forces colored `coli` output when not a TTY. |
 | `COLI_RAW` | `0` | `coli` raw output mode. |

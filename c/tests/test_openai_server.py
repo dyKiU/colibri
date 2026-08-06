@@ -2,6 +2,9 @@ import http.client
 import io
 import json
 import math
+import os
+import subprocess
+import signal
 import socket
 import tempfile
 import threading
@@ -498,6 +501,118 @@ class DispatcherTest(unittest.TestCase):
             self.assertFalse(engine.pending)
         with self.assertRaisesRegex(RuntimeError, "shutting down"):
             engine.generate("again", 4, 0.7, 0.9, lambda _: None)
+
+    def test_close_waits_for_graceful_sigterm_without_a_default_kill_deadline(self):
+        class GracefulProcess(FakeProcess):
+            def __init__(self):
+                super().__init__(lambda _process, _frame: None)
+                self.wait_timeouts = []
+                self.killed = False
+
+            def wait(self, timeout=None):
+                self.wait_timeouts.append(timeout)
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired("colibri", timeout)
+                self.returncode = 0
+                self.stdout.close()
+                return 0
+
+            def kill(self):
+                self.killed = True
+                self.returncode = -9
+                self.stdout.close()
+
+        process = GracefulProcess()
+        with patch("openai_server.subprocess.Popen", return_value=process):
+            engine = Engine("glm", "model")
+        engine.close()
+
+        self.assertEqual(process.wait_timeouts, [None])
+        self.assertFalse(process.killed)
+        self.assertFalse(engine.dispatcher.is_alive())
+
+    def test_close_escalates_only_when_shutdown_timeout_is_explicit(self):
+        class StuckProcess(FakeProcess):
+            def __init__(self):
+                super().__init__(lambda _process, _frame: None)
+                self.wait_timeouts = []
+                self.killed = False
+
+            def wait(self, timeout=None):
+                self.wait_timeouts.append(timeout)
+                if not self.killed:
+                    raise subprocess.TimeoutExpired("colibri", timeout)
+                self.returncode = -9
+                self.stdout.close()
+                return self.returncode
+
+            def kill(self):
+                self.killed = True
+
+        process = StuckProcess()
+        with patch("openai_server.subprocess.Popen", return_value=process), \
+             patch.dict("openai_server.os.environ", {"COLI_SHUTDOWN_TIMEOUT": "0.25"}):
+            engine = Engine("glm", "model")
+            engine.close()
+
+        self.assertEqual(process.wait_timeouts, [0.25, None])
+        self.assertTrue(process.killed)
+
+    @unittest.skipUnless(os.name == "posix", "SIGTERM integration is POSIX-only")
+    def test_wrapper_sigterm_waits_for_engine_cleanup_and_exits_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "model"
+            model.mkdir()
+            (model / "config.json").write_text(json.dumps({"model_type": "glm_moe_dsa"}))
+            marker = root / "clean-shutdown"
+            fake_engine = root / "fake-engine"
+            fake_engine.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, signal, sys, time\n"
+                "def stop(*_):\n"
+                "    time.sleep(0.15)\n"
+                "    open(os.environ['CLEAN_MARKER'], 'w').write('clean\\n')\n"
+                "    raise SystemExit(0)\n"
+                "signal.signal(signal.SIGTERM, stop)\n"
+                "sys.stdout.buffer.write(b'\\x01\\x01READY\\x01\\x01\\nSTAT 0 0 0 0\\n')\n"
+                "sys.stdout.buffer.flush()\n"
+                "while True: signal.pause()\n"
+            )
+            fake_engine.chmod(0o755)
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+            env = dict(os.environ, CLEAN_MARKER=str(marker))
+            env.pop("COLI_SHUTDOWN_TIMEOUT", None)
+            server = subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve().parents[1] / "openai_server.py"),
+                 "--model", str(model), "--engine", str(fake_engine),
+                 "--host", "127.0.0.1", "--port", str(port)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+            )
+            try:
+                for _ in range(100):
+                    if server.poll() is not None:
+                        break
+                    try:
+                        with urlopen(f"http://127.0.0.1:{port}/health", timeout=0.1):
+                            break
+                    except OSError:
+                        time.sleep(0.02)
+                else:
+                    self.fail("wrapper did not become ready")
+                self.assertIsNone(server.poll())
+                server.send_signal(signal.SIGTERM)
+                stdout, stderr = server.communicate(timeout=5)
+            finally:
+                if server.poll() is None:
+                    server.kill()
+                    server.wait()
+
+            self.assertEqual(server.returncode, 0, stderr)
+            self.assertEqual(stdout, "")
+            self.assertEqual(marker.read_text(), "clean\n")
 
     def test_protocol_corruption_fails_request_and_stops_dispatcher(self):
         def respond(process, frame):

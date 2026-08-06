@@ -51,6 +51,20 @@ DEFAULT_CORS_ORIGINS = (
 )
 
 
+def shutdown_timeout():
+    """Optional forced-shutdown deadline; unset means preserve engine cleanup."""
+    raw = os.environ.get("COLI_SHUTDOWN_TIMEOUT")
+    if raw is None:
+        return None
+    try:
+        timeout = float(raw)
+    except ValueError as error:
+        raise ValueError("COLI_SHUTDOWN_TIMEOUT must be a non-negative number") from error
+    if timeout < 0:
+        raise ValueError("COLI_SHUTDOWN_TIMEOUT must be a non-negative number")
+    return timeout
+
+
 class APIError(Exception):
     def __init__(self, status, message, param=None, code=None, error_type="invalid_request_error",
                  headers=None):
@@ -1706,11 +1720,15 @@ class Engine:
         self._fail_pending(RuntimeError("colibri engine is shutting down"))
         if self.process.poll() is None:
             self.process.terminate()
+            timeout = shutdown_timeout()
             try:
-                self.process.wait(timeout=5)
+                # A SIGTERM received during a long prefill is only observed once that
+                # prefill unwinds. Do not destroy usage/KV cleanup on an arbitrary
+                # five-second timer; the service manager remains the outer deadline.
+                self.process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 self.process.kill()
-                self.process.wait(timeout=5)
+                self.process.wait()
         if self.dispatcher is not threading.current_thread():
             self.dispatcher.join(timeout=5)
 
