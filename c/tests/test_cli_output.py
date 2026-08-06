@@ -135,6 +135,67 @@ class ChatCapForwardingTest(unittest.TestCase):
         self.assertNotIn("--cap", cmd)
 
 
+class StopShutdownTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        loader = SourceFileLoader("coli_cli_stop_under_test", str(CLI))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        cls.coli = importlib.util.module_from_spec(spec)
+        loader.exec_module(cls.coli)
+
+    def test_stop_waits_for_clean_exit_instead_of_unconditional_sigkill(self):
+        coli = self.coli
+        signals = []
+        terminated = False
+
+        def fake_kill(pid, sig):
+            nonlocal terminated
+            self.assertEqual(pid, 123)
+            signals.append(sig)
+            if sig == coli.signal.SIGTERM:
+                terminated = True
+                return
+            if sig == 0 and terminated:
+                raise ProcessLookupError
+
+        args = types.SimpleNamespace(port=8000, dry_run=False)
+        with mock.patch.object(coli, "banner"), \
+             mock.patch.object(coli.os, "listdir", return_value=[]), \
+             mock.patch.object(coli.os, "kill", side_effect=fake_kill), \
+             mock.patch.object(coli.os, "unlink"), \
+             mock.patch.object(coli.time, "sleep"), \
+             mock.patch("builtins.open", mock.mock_open(read_data="123 /model\n")):
+            coli.cmd_stop(args)
+
+        self.assertEqual(signals, [0, coli.signal.SIGTERM, 0])
+
+    def test_stop_escalates_when_shutdown_timeout_is_explicit(self):
+        coli = self.coli
+        signals = []
+
+        def fake_kill(pid, sig):
+            self.assertEqual(pid, 123)
+            signals.append(sig)
+
+        args = types.SimpleNamespace(port=8000, dry_run=False)
+        with mock.patch.object(coli, "banner"), \
+             mock.patch.object(coli.os, "listdir", return_value=[]), \
+             mock.patch.object(coli.os, "kill", side_effect=fake_kill), \
+             mock.patch.object(coli.os, "unlink"), \
+             mock.patch.object(coli.time, "sleep"), \
+             mock.patch.object(coli.time, "monotonic", side_effect=[10.0, 10.5]), \
+             mock.patch.dict(coli.os.environ, {"COLI_SHUTDOWN_TIMEOUT": "0.25"}), \
+             mock.patch("builtins.open", mock.mock_open(read_data="123 /model\n")):
+            coli.cmd_stop(args)
+
+        self.assertEqual(signals, [
+            0,
+            coli.signal.SIGTERM,
+            0,
+            getattr(coli.signal, "SIGKILL", coli.signal.SIGTERM),
+        ])
+
+
 class BannerModelLineTest(unittest.TestCase):
     """The banner's third line must describe the model that is loaded.
 
