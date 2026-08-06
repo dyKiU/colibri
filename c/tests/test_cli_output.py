@@ -193,7 +193,7 @@ class StopShutdownTest(unittest.TestCase):
             0,
             coli.signal.SIGTERM,
             0,
-            coli.signal.SIGKILL,
+            getattr(coli.signal, "SIGKILL", coli.signal.SIGTERM),
         ])
 
 

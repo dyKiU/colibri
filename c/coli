@@ -1218,10 +1218,11 @@ def cmd_stop(a):
         pending=alive
         if not pending: break
         if deadline is not None and time.monotonic()>=deadline:
+            force_signal=getattr(signal,"SIGKILL",signal.SIGTERM)
             for pid in pending:
                 try:
-                    os.kill(pid,signal.SIGKILL)
-                    print(f"  {pid}: forced after {timeout:g}s (SIGKILL)")
+                    os.kill(pid,force_signal)
+                    print(f"  {pid}: forced after {timeout:g}s")
                 except OSError: pass
             break
         time.sleep(0.1)

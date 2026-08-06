@@ -592,17 +592,20 @@ class DispatcherTest(unittest.TestCase):
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             )
             try:
-                for _ in range(100):
+                ready = False
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
                     if server.poll() is not None:
                         break
                     try:
-                        with urlopen(f"http://127.0.0.1:{port}/health", timeout=0.1):
+                        with urlopen(f"http://127.0.0.1:{port}/health", timeout=0.25):
+                            ready = True
                             break
                     except OSError:
-                        time.sleep(0.02)
-                else:
+                        time.sleep(0.05)
+                if not ready and server.poll() is None:
                     self.fail("wrapper did not become ready")
-                self.assertIsNone(server.poll())
+                self.assertIsNone(server.poll(), "wrapper exited before becoming ready")
                 server.send_signal(signal.SIGTERM)
                 stdout, stderr = server.communicate(timeout=5)
             finally:
